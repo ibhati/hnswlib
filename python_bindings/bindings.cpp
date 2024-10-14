@@ -8,6 +8,7 @@
 #include <atomic>
 #include <stdlib.h>
 #include <assert.h>
+#include <omp.h>
 
 namespace py = pybind11;
 using namespace pybind11::literals;  // needed to bring in _a literal
@@ -261,9 +262,9 @@ class Index {
             throw std::runtime_error("Wrong dimensionality of the vectors");
 
         // avoid using threads when the number of additions is small:
-        if (rows <= num_threads * 4) {
-            num_threads = 1;
-        }
+        //if (rows <= num_threads * 4) {
+        //    num_threads = 1;
+        //}
 
         std::vector<size_t> ids = get_input_ids_and_check_shapes(ids_, rows);
 
@@ -628,9 +629,9 @@ class Index {
             get_input_array_shapes(buffer, &rows, &features);
 
             // avoid using threads when the number of searches is small:
-            if (rows <= num_threads * 4) {
-                num_threads = 1;
-            }
+            // if (rows <= num_threads * 4) {
+            //     num_threads = 1;
+            // }
 
             data_numpy_l = new hnswlib::labeltype[rows * k];
             data_numpy_d = new dist_t[rows * k];
@@ -639,21 +640,39 @@ class Index {
             CustomFilterFunctor idFilter(filter);
             CustomFilterFunctor* p_idFilter = filter ? &idFilter : nullptr;
 
+            omp_set_num_threads(num_threads);
             if (normalize == false) {
-                ParallelFor(0, rows, num_threads, [&](size_t row, size_t threadId) {
+#pragma omp parallel for
+//#pragma omp parallel for schedule(dynamic, 1) default(none) shared(rows, k, items, p_idFilter, data_numpy_l, data_numpy_d)
+                for (size_t row = 0; row < rows; row++) {
                     std::priority_queue<std::pair<dist_t, hnswlib::labeltype >> result = appr_alg->searchKnn(
-                        (void*)items.data(row), k, p_idFilter);
+                            (void*)items.data(row), k, p_idFilter);
                     if (result.size() != k)
                         throw std::runtime_error(
-                            "Cannot return the results in a contiguous 2D array. Probably ef or M is too small");
+                                "Cannot return the results in a contiguous 2D array. Probably ef or M is too small");
                     for (int i = k - 1; i >= 0; i--) {
                         auto& result_tuple = result.top();
                         data_numpy_d[row * k + i] = result_tuple.first;
                         data_numpy_l[row * k + i] = result_tuple.second;
                         result.pop();
                     }
-                });
+                }
+
+                //ParallelFor(0, rows, num_threads, [&](size_t row, size_t threadId) {
+                //    std::priority_queue<std::pair<dist_t, hnswlib::labeltype >> result = appr_alg->searchKnn(
+                //        (void*)items.data(row), k, p_idFilter);
+                //    if (result.size() != k)
+                //        throw std::runtime_error(
+                //            "Cannot return the results in a contiguous 2D array. Probably ef or M is too small");
+                //    for (int i = k - 1; i >= 0; i--) {
+                //        auto& result_tuple = result.top();
+                //        data_numpy_d[row * k + i] = result_tuple.first;
+                //        data_numpy_l[row * k + i] = result_tuple.second;
+                //        result.pop();
+                //    }
+                //});
             } else {
+                //std::cout << "threads1: " << num_threads << std::endl;
                 std::vector<float> norm_array(num_threads * features);
                 ParallelFor(0, rows, num_threads, [&](size_t row, size_t threadId) {
                     float* data = (float*)items.data(row);
